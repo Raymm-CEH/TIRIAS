@@ -1,0 +1,25 @@
+
+# Python environments and cache
+.venv/
+__pycache__/
+*.py[cod]
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Logs and operating-system files
+*.log
+.DS_Store
+
+# Local models and generated files
+models/
+sd
+TaskPlan
+
+# Backups
+*.bak
+*.bak-*
+*.pre-planner
+*~
