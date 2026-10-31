@@ -75,8 +75,10 @@ exact planner phrases still work and unknown requests are rejected safely.
 
 ## Current implementation boundary
 
-This is the architecture foundation, not a finished autonomous assistant.
-The local model adapter, allowlisted intent mapping, bounded session context,
-and opt-in SQLite memory are separate modules. The next integration phase
-must connect them to the main command loop, add user-facing memory commands,
-and test the full planner/permission/executor path on the target Kali setup.
+The core now wires the local model adapter, allowlisted intent mapping,
+bounded session context, explicit SQLite memory commands, deterministic
+planner, and allowlisted executor into the command loop. Existing exact
+commands and confirmation/cancellation handling run before the intelligence
+fallback. The optional GGUF model is still not installed or configured, and
+the integrated test suite must be run on the target Kali setup before this
+branch is considered ready.
