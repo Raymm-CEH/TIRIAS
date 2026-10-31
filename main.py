@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TIRIAS Core v0.6: natural-language commands with optional speech input/output."""
+"""TIRIAS Core v0.8: offline-first intelligence with safe local execution."""
 from datetime import datetime
 from tirias.context import ConversationContext
 from tirias.executor import Executor
