@@ -45,10 +45,29 @@ sudo apt install --no-upgrade python3-tk
 
 ## What this is not yet
 
-- Not a general conversational AI or open-ended task planner.
+- Not yet a broad autonomous assistant; natural-language understanding currently maps only to a small reviewed set of supported goals.
 - Not a dedicated low-power wake-word model.
 - Not a Rust/C++ rewrite. We will add native components when profiling demonstrates a concrete need and the module boundary is clear.
 - Not a Windows remote-control agent or bootable USB OS.
+
+
+## Offline-first intelligence foundation
+
+The intelligence integration is being developed on the `feature/intelligence-foundation`
+branch. It adds:
+
+- Optional local GGUF model inference through `TIRIAS_MODEL_PATH`.
+- Bounded, temporary conversation context.
+- Explicit local SQLite memory commands: `remember KEY as VALUE`,
+  `recall KEY`, `forget KEY`, and `list memories`.
+- Deterministic planning and allowlisted execution after existing command and
+  confirmation routes.
+- Fail-closed handling: model output must match a canonical goal; arbitrary
+  shell commands and model-generated code are never executed.
+
+The local model weights and `llama-cpp-python` runtime are not included or
+installed automatically. Without a configured model, exact supported goals
+still work and unknown requests are rejected.
 
 ## Tests
 
