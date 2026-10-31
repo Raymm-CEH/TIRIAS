@@ -273,6 +273,24 @@ class CoreTests(unittest.TestCase):
         self.assertIn("won't store", text)
         self.assertIsNone(self.core.memory.recall("password"))
 
+    def test_local_model_can_map_natural_language_to_allowlisted_goal(self):
+        class FakeModel:
+            def generate(self, prompt):
+                self.prompt = prompt
+                return '{"goal": "inspect my workspace"}'
+        model = FakeModel()
+        core = TIRIASCore(
+            home=self.home,
+            audit_path=self.home / "audit.log",
+            speech=FakeSpeechOutput(),
+            voice_input=FakeVoiceInput(),
+            model=model,
+            memory_path=self.home / "memory.sqlite3",
+        )
+        _, text = core.handle_command("please take a look around my project files")
+        self.assertIn("Contents of", text)
+        self.assertIn("please take a look around my project files", model.prompt)
+
     def test_unknown_request_does_not_execute_model_supplied_command(self):
         class UnsafeModel:
             def generate(self, prompt):
