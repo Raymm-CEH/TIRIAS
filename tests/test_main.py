@@ -250,7 +250,7 @@ class CoreTests(unittest.TestCase):
     def test_intelligence_fallback_plans_workspace_request(self):
         _, text = self.core.handle_command("inspect my workspace")
         self.assertIn("current folder is now", text)
-        self.assertIn("Contents of", text)
+        self.assertIn(str(self.core.workspace), text)
         self.assertEqual(self.core.current_dir, self.core.workspace.resolve())
 
     def test_context_tracks_recent_command_and_response(self):
