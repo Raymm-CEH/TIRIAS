@@ -591,7 +591,7 @@ class TIRIASCore:
                               "For a project folder, say 'create a folder called NAME'; "
                               "I'll ask you to confirm before creating it.")
             results = self.executor.execute(plan)
-            return True, "\\n".join(results)
+            return True, "\n".join(results)
         return True, "I don't recognize that request yet. Try 'help'. For safety, I never execute arbitrary terminal text."
 
 
