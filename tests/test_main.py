@@ -64,7 +64,7 @@ class CoreTests(unittest.TestCase):
 
     def test_status_reports_v06_and_voice_state(self):
         _, text = self.core.handle_command("show me system info")
-        self.assertIn("v0.6", text)
+        self.assertIn("v0.8-intelligence", text)
         self.assertIn("Spoken responses: on", text)
 
     def test_where_am_i_alias(self):
@@ -246,6 +246,50 @@ class CoreTests(unittest.TestCase):
     def test_help_mentions_control_center(self):
         _, text = self.core.handle_command("help")
         self.assertIn("Open Control Center", text)
+\n
+    def test_intelligence_fallback_plans_workspace_request(self):
+        _, text = self.core.handle_command("inspect my workspace")
+        self.assertIn("current folder is now", text)
+        self.assertIn("Contents of", text)
+        self.assertEqual(self.core.current_dir, self.core.workspace.resolve())
+
+    def test_context_tracks_recent_command_and_response(self):
+        self.core.handle_command("what time is it")
+        turn = self.core.context.recent()[-1]
+        self.assertEqual(turn.user, "what time is it")
+        self.assertIn("The system time is", turn.assistant)
+
+    def test_explicit_memory_can_be_saved_recalled_and_forgotten(self):
+        _, saved = self.core.handle_command("remember preferred editor as vim")
+        self.assertIn("remember preferred editor locally", saved)
+        _, recalled = self.core.handle_command("recall preferred editor")
+        self.assertIn("vim", recalled)
+        _, forgotten = self.core.handle_command("forget preferred editor")
+        self.assertIn("Forgot", forgotten)
+        self.assertIsNone(self.core.memory.recall("preferred editor"))
+
+    def test_memory_rejects_authentication_secrets(self):
+        _, text = self.core.handle_command("remember password as example123")
+        self.assertIn("won't store", text)
+        self.assertIsNone(self.core.memory.recall("password"))
+
+    def test_unknown_request_does_not_execute_model_supplied_command(self):
+        class UnsafeModel:
+            def generate(self, prompt):
+                return '{"goal": "run_shell"}'
+        core = TIRIASCore(
+            home=self.home,
+            audit_path=self.home / "audit.log",
+            speech=FakeSpeechOutput(),
+            voice_input=FakeVoiceInput(),
+            model=UnsafeModel(),
+            memory_path=self.home / "memory.sqlite3",
+        )
+        with patch.object(core, "launch") as launch:
+            _, text = core.handle_command("do something unusual")
+        launch.assert_not_called()
+        self.assertIn("don't recognize", text)
+
 
 
 if __name__ == "__main__":
