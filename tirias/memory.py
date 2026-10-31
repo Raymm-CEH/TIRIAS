@@ -3,6 +3,7 @@
 No conversation is automatically persisted. Call remember() only after the
 user explicitly asks TIRIAS to remember a non-sensitive preference or fact.
 """
+from contextlib import contextmanager
 from pathlib import Path
 import sqlite3
 
@@ -20,10 +21,15 @@ class LocalMemory:
                 )"""
             )
 
+    @contextmanager
     def _connect(self):
         connection = sqlite3.connect(self.database_path, timeout=5)
-        connection.execute("PRAGMA journal_mode=WAL")
-        return connection
+        try:
+            connection.execute("PRAGMA journal_mode=WAL")
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     @staticmethod
     def _validate(key, value):
