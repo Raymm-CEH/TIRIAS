@@ -84,3 +84,29 @@ class BrowserGatewayTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SearchRoutingTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.home = Path(self.temp.name)
+        self.core = TIRIASCore(
+            home=self.home,
+            audit_path=self.home / "audit.log",
+            speech=QuietSpeech(),
+            voice_input=QuietVoice(),
+        )
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_search_command_goes_through_gateway(self):
+        with patch("tirias.skill_system.web_skill._open_in_firefox") as opener:
+            _, text = self.core.handle_command("open my browser and search for spotify")
+        opener.assert_called_once_with("https://duckduckgo.com/?q=spotify")
+        self.assertEqual(text, "Searching the web for spotify.")
+
+    def test_normal_question_does_not_search(self):
+        with patch("tirias.skill_system.web_skill._open_in_firefox") as opener:
+            self.core.handle_command("what is a search engine")
+        opener.assert_not_called()

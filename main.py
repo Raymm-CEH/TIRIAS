@@ -23,6 +23,7 @@ import sys
 import time
 
 from tirias.skill_system.application_skill import ApplicationSkill
+from tirias.skill_system.web_skill import WebSearchSkill, parse_search_request
 from tirias.skill_system.gateway import SkillGateway
 from tirias.skill_system.manager import SkillManager
 
@@ -341,9 +342,12 @@ class TIRIASCore:
         registered, errors = skill_manager.register_skill(ApplicationSkill())
         if not registered or not skill_manager.enable_skill("application_control"):
             raise RuntimeError(f"Application skill failed to load: {errors}")
+        registered, errors = skill_manager.register_skill(WebSearchSkill())
+        if not registered or not skill_manager.enable_skill("web_search"):
+            raise RuntimeError(f"Web search skill failed to load: {errors}")
         self.gateway = SkillGateway(
             skill_manager,
-            granted_permissions=("applications.launch",),
+            granted_permissions=("applications.launch", "network.read"),
             audit_path=self.audit_path.with_name("gateway-audit.log"),
         )
 
@@ -358,6 +362,16 @@ class TIRIASCore:
                 f.write(f"{datetime.now().astimezone().isoformat(timespec='seconds')} | {event}\n")
         except OSError:
             pass
+
+    def _search_via_gateway(self, query):
+        result = self.gateway.request("web_search", "search_web", {"query": query})
+        if not result.allowed:
+            self.audit("gateway_denied skill=web_search")
+            return f"I couldn't run that search: {result.message}"
+        if result.message.startswith("Search request sent"):
+            self.audit("web_search via=gateway")
+            return f"Searching the web for {query}."
+        return f"I couldn't run that search: {result.message}"
 
     def _launch_via_gateway(self, app_id, label):
         result = self.gateway.request(
@@ -613,6 +627,10 @@ class TIRIASCore:
                 if app == "files":
                     return True, self.launch("files", self.current_dir)
                 return True, self.launch(app)
+
+        search_query = parse_search_request(command)
+        if search_query is not None:
+            return True, self._search_via_gateway(search_query)
 
         folder_name = self._parse_folder_request(command)
         if folder_name is not None:
