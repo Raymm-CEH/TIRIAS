@@ -110,3 +110,51 @@ class SearchRoutingTests(unittest.TestCase):
         with patch("tirias.skill_system.web_skill._open_in_firefox") as opener:
             self.core.handle_command("what is a search engine")
         opener.assert_not_called()
+
+
+class MigratedLaunchTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.home = Path(self.temp.name)
+        self.core = TIRIASCore(
+            home=self.home,
+            audit_path=self.home / "audit.log",
+            speech=QuietSpeech(),
+            voice_input=QuietVoice(),
+        )
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_terminal_and_settings_launch_through_gateway(self):
+        for app, path in (
+            ("terminal", "/usr/bin/x-terminal-emulator"),
+            ("settings", "/usr/bin/xfce4-settings-manager"),
+        ):
+            with patch("tirias.app_controller.shutil.which", return_value=path), \
+                 patch("tirias.app_controller.subprocess.Popen") as popen:
+                result = self.core.launch(app)
+            popen.assert_called_once()
+            self.assertEqual(popen.call_args.args[0], [path])
+            self.assertEqual(result, f"Opening {app}.")
+
+    def test_files_launch_goes_through_folder_skill(self):
+        with patch("tirias.skill_system.folder_skill._open_in_file_manager") as opener:
+            result = self.core.launch("files", self.core.home)
+        opener.assert_called_once_with(self.core.home)
+        self.assertEqual(result, "Opening files.")
+
+    def test_files_outside_home_is_denied(self):
+        with patch("tirias.skill_system.folder_skill._open_in_file_manager") as opener:
+            result = self.core.launch("files", "/etc")
+        opener.assert_not_called()
+        self.assertIn("couldn't open", result)
+
+    def test_control_center_goes_through_gateway(self):
+        with patch("tirias.skill_system.control_center_skill._open_control_center") as opener:
+            result = self.core.launch("control-center")
+        opener.assert_called_once()
+        self.assertEqual(result, "Opening the TIRIAS Control Center.")
+
+    def test_unknown_app_is_refused(self):
+        self.assertIn("approved", self.core.launch("calculator"))

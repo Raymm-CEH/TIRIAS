@@ -26,6 +26,16 @@ APPROVED_APPLICATIONS = {
         name="Thunar File Manager",
         executable="/usr/bin/thunar",
     ),
+    "terminal": Application(
+        app_id="terminal",
+        name="Terminal",
+        executable="/usr/bin/x-terminal-emulator",
+    ),
+    "settings": Application(
+        app_id="settings",
+        name="Settings Manager",
+        executable="/usr/bin/xfce4-settings-manager",
+    ),
 }
 
 
