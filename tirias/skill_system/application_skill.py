@@ -66,24 +66,3 @@ class ApplicationSkill(Skill):
                 },
             )
         }
-
-    def action_specs(self) -> dict:
-        from tirias.app_registry import list_applications
-        from tirias.skill_system.interface import ActionSpec
-
-        return {
-            "launch_application": ActionSpec(
-                permission="applications.launch",
-                schema={
-                    "type": "object",
-                    "properties": {
-                        "app_id": {
-                            "type": "string",
-                            "enum": [a.app_id for a in list_applications()],
-                        }
-                    },
-                    "required": ["app_id"],
-                    "additionalProperties": False,
-                },
-            )
-        }
