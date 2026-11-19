@@ -246,7 +246,6 @@ class CoreTests(unittest.TestCase):
     def test_help_mentions_control_center(self):
         _, text = self.core.handle_command("help")
         self.assertIn("Open Control Center", text)
-\n
     def test_intelligence_fallback_plans_workspace_request(self):
         _, text = self.core.handle_command("inspect my workspace")
         self.assertIn("current folder is now", text)
@@ -288,7 +287,8 @@ class CoreTests(unittest.TestCase):
             memory_path=self.home / "memory.sqlite3",
         )
         _, text = core.handle_command("please take a look around my project files")
-        self.assertIn("Contents of", text)
+        self.assertIn("current folder is now", text)
+        self.assertIn(str(core.workspace), text)
         self.assertIn("please take a look around my project files", model.prompt)
 
     def test_unknown_request_does_not_execute_model_supplied_command(self):
@@ -310,5 +310,61 @@ class CoreTests(unittest.TestCase):
 
 
 
+
+    def test_general_question_uses_conversation_engine(self):
+        class FakeConversation:
+            def __init__(self):
+                self.received_message = None
+                self.received_context = None
+
+            def respond(self, message, context=""):
+                self.received_message = message
+                self.received_context = context
+                return "The sky appears blue because of Rayleigh scattering."
+
+        conversation = FakeConversation()
+        core = TIRIASCore(
+            home=self.home,
+            audit_path=self.home / "conversation-audit.log",
+            speech=FakeSpeechOutput(),
+            voice_input=FakeVoiceInput(),
+            conversation=conversation,
+        )
+
+        _, answer = core.handle_command("Explain why the sky appears blue.")
+
+        self.assertIn("Rayleigh scattering", answer)
+        self.assertEqual(
+            conversation.received_message,
+            "Explain why the sky appears blue."
+        )
+        self.assertIsInstance(conversation.received_context, str)
+
+
 if __name__ == "__main__":
-    unittest.main()
+  
+    def test_conversation_engine_receives_previous_turns(self):
+        class FakeConversation:
+            def __init__(self):
+                self.contexts = []
+
+            def respond(self, message, context=""):
+                self.contexts.append(context)
+                return f"Reply to: {message}"
+
+        conversation = FakeConversation()
+        core = TIRIASCore(
+            home=self.home,
+            audit_path=self.home / "conversation-audit.log",
+            speech=FakeSpeechOutput(),
+            voice_input=FakeVoiceInput(),
+            conversation=conversation,
+        )
+
+        core.handle_command("My name is Alex.")
+        core.handle_command("What is my name?")
+
+        self.assertEqual(len(conversation.contexts), 2)
+        self.assertEqual(conversation.contexts[0], "")
+        self.assertIn("My name is Alex.", conversation.contexts[1])
+        self.assertIn("Reply to: My name is Alex.", conversation.contexts[1])  

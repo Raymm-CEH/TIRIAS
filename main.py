@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """TIRIAS Core v0.8: offline-first intelligence with safe local execution."""
+
 from datetime import datetime
 from tirias.context import ConversationContext
 from tirias.executor import Executor
@@ -7,6 +8,7 @@ from tirias.intelligence import IntelligenceEngine
 from tirias.local_model import LocalGGUFModel
 from tirias.memory import LocalMemory
 from pathlib import Path
+from tirias.conversation import ConversationEngine
 import json
 import os
 import platform
@@ -277,6 +279,7 @@ class VoiceInput:
                         if transcript:
                             return transcript
 
+
             result = json.loads(recognizer.FinalResult())
             return str(result.get("text", "")).strip()
         except VoiceInputError:
@@ -313,7 +316,7 @@ def normalize(text: str) -> str:
 
 
 class TIRIASCore:
-    def __init__(self, home=None, audit_path=None, speech=None, voice_input=None, model=None, memory_path=None):
+    def __init__(self, home=None, audit_path=None, speech=None, voice_input=None, model=None, memory_path=None, conversation=None):
         self.home = Path(home or Path.home()).expanduser().resolve()
         self.current_dir = self.home
         self.workspace = self.home / "TIRIAS-Workspace"
@@ -325,6 +328,7 @@ class TIRIASCore:
         self.context = ConversationContext(max_turns=8, max_chars=500)
         self.memory = LocalMemory(memory_path or state_dir / "memory.sqlite3")
         self.intelligence = IntelligenceEngine(model=model if model is not None else LocalGGUFModel())
+        self.conversation = conversation
         self.executor = Executor(self)
 
     def speak_response(self, response):
@@ -592,6 +596,19 @@ class TIRIASCore:
                               "I'll ask you to confirm before creating it.")
             results = self.executor.execute(plan)
             return True, "\n".join(results)
+        if self.conversation is not None:
+            try:
+                answer = self.conversation.respond(
+                    command,
+                    context=self.context.render(),
+                )
+                return True, answer
+            except RuntimeError:
+                return True, (
+                    "I couldn't reach the conversation service. "
+                    "Your local TIRIAS commands are still available."
+                )
+
         return True, "I don't recognize that request yet. Try 'help'. For safety, I never execute arbitrary terminal text."
 
 
@@ -636,7 +653,8 @@ class TIRIASCore:
 
 
 def main():
-    tirias = TIRIASCore()
+    conversation = ConversationEngine()
+    tirias = TIRIASCore(conversation=conversation)
     print(
         f"TIRIAS Core {VERSION}\nNatural-language commands with optional voice input/output. "
         "Type 'help' for examples.\n"
