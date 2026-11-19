@@ -51,7 +51,7 @@ class WebSearchSkill(Skill):
     """Open a web search in the approved browser."""
 
     def __init__(self, opener=None):
-        self._open = opener or _open_in_firefox
+        self._open = opener
 
     @property
     def manifest(self) -> SkillManifest:
@@ -100,7 +100,7 @@ class WebSearchSkill(Skill):
         ):
             return "Rejected: invalid search query."
         try:
-            self._open(SEARCH_URL + quote_plus(query.strip()))
+            (self._open or _open_in_firefox)(SEARCH_URL + quote_plus(query.strip()))
         except OSError as error:
             return f"Search failed: {error}"
         return "Search request sent."
