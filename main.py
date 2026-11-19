@@ -23,6 +23,8 @@ import sys
 import time
 
 from tirias.skill_system.application_skill import ApplicationSkill
+from tirias.skill_system.control_center_skill import ControlCenterSkill
+from tirias.skill_system.folder_skill import FolderSkill
 from tirias.skill_system.web_skill import WebSearchSkill, parse_search_request
 from tirias.skill_system.gateway import SkillGateway
 from tirias.skill_system.manager import SkillManager
@@ -345,9 +347,19 @@ class TIRIASCore:
         registered, errors = skill_manager.register_skill(WebSearchSkill())
         if not registered or not skill_manager.enable_skill("web_search"):
             raise RuntimeError(f"Web search skill failed to load: {errors}")
+        for extra_skill in (
+            FolderSkill(self.home),
+            ControlCenterSkill(Path(__file__).resolve().with_name("control_center.py")),
+        ):
+            registered, errors = skill_manager.register_skill(extra_skill)
+            extra_id = extra_skill.manifest.skill_id
+            if not registered or not skill_manager.enable_skill(extra_id):
+                raise RuntimeError(f"Skill {extra_id} failed to load: {errors}")
         self.gateway = SkillGateway(
             skill_manager,
-            granted_permissions=("applications.launch", "network.read"),
+            granted_permissions=(
+                "applications.launch", "network.read", "files.read", "desktop.interact",
+            ),
             audit_path=self.audit_path.with_name("gateway-audit.log"),
         )
 
@@ -373,56 +385,35 @@ class TIRIASCore:
             return f"Searching the web for {query}."
         return f"I couldn't run that search: {result.message}"
 
-    def _launch_via_gateway(self, app_id, label):
-        result = self.gateway.request(
-            "application_control", "launch_application", {"app_id": app_id}
-        )
+    GATEWAY_APPS = {"browser": "firefox", "terminal": "terminal", "settings": "settings"}
+
+    def _gateway_launch(self, skill_id, action, arguments, label):
+        result = self.gateway.request(skill_id, action, arguments)
         if not result.allowed:
-            self.audit(f"gateway_denied app={app_id}")
+            self.audit(f"gateway_denied skill={skill_id} action={action}")
             return f"I couldn't open {label}: {result.message}"
         if result.message.startswith("Launch request sent"):
-            self.audit(f"launched_app app={app_id} via=gateway")
+            self.audit(f"launched_app skill={skill_id} action={action} via=gateway")
             return f"Opening {label}."
         return f"I couldn't open {label}: {result.message}"
 
     def launch(self, app, target=None):
-        # Migrated: browser goes through the gateway.
-        # TODO: move terminal, settings, files and control-center onto the gateway too.
-        if app == "browser" and target is None:
-            return self._launch_via_gateway("firefox", "browser")
+        """Launch an approved app. Every launch goes through the skill gateway."""
         if app == "control-center":
-            control_center = Path(__file__).resolve().with_name("control_center.py")
-            if not control_center.is_file():
-                return "TIRIAS Control Center is missing from this project folder."
-            try:
-                check = subprocess.run(
-                    [sys.executable, "-c", "import tkinter"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                    text=True, timeout=5, check=False,
-                )
-                if check.returncode != 0:
-                    return ("TIRIAS Control Center needs Python Tkinter. On Kali/Debian, install it with "
-                            "'sudo apt install python3-tk', then try again. Details: " +
-                            (check.stderr.strip().splitlines()[-1] if check.stderr.strip() else "Tkinter unavailable."))
-                subprocess.Popen(
-                    [sys.executable, str(control_center)],
-                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL, start_new_session=True,
-                )
-                self.audit("launched_app app=control-center")
-                return "Opening the TIRIAS Control Center."
-            except (OSError, subprocess.SubprocessError) as exc:
-                return f"I couldn't open the TIRIAS Control Center: {exc}"
-        for template in APPS[app]:
-            if shutil.which(template[0]):
-                args = [x.replace("{target}", str(target)) for x in template]
-                try:
-                    subprocess.Popen(args, start_new_session=True)
-                    self.audit(f"launched_app app={app}")
-                    return f"Opening {app}."
-                except OSError as e:
-                    return f"I couldn't open {app}: {e}"
-        return f"I couldn't find a supported {app} application on this computer."
+            return self._gateway_launch(
+                "control_center", "open_control_center", {}, "the TIRIAS Control Center"
+            )
+        if app == "files":
+            folder = str(target if target is not None else self.current_dir)
+            return self._gateway_launch(
+                "folder_access", "open_folder", {"path": folder}, "files"
+            )
+        app_id = self.GATEWAY_APPS.get(app)
+        if app_id is None:
+            return f"I don't have an approved application for {app}."
+        return self._gateway_launch(
+            "application_control", "launch_application", {"app_id": app_id}, app
+        )
 
     def list_files(self):
         try:

@@ -16,8 +16,8 @@ class TestApplicationRegistry(unittest.TestCase):
     def test_application_names_are_normalized(self):
         self.assertIsNotNone(get_application(" FIREFOX "))
 
-    def test_registry_contains_three_apps(self):
-        self.assertEqual(len(list_applications()), 3)
+    def test_registry_contains_five_apps(self):
+        self.assertEqual(len(list_applications()), 5)
 
 
 if __name__ == "__main__":
