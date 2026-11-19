@@ -9,6 +9,9 @@ from tirias.local_model import LocalGGUFModel
 from tirias.memory import LocalMemory
 from pathlib import Path
 from tirias.conversation import ConversationEngine
+from tirias.providers.fallback import FallbackProvider
+from tirias.providers.ollama_provider import OllamaProvider
+from tirias.providers.openai_provider import OpenAIProvider
 import json
 import os
 import platform
@@ -66,7 +69,7 @@ FOLDER_SHOW_ALIASES = {
 APP_ALIASES = {
     "terminal": {"terminal", "a terminal", "the terminal", "command terminal"},
     "files": {"files", "file manager", "folder window", "my files"},
-    "browser": {"browser", "web browser", "internet browser", "the browser", "my browser"},
+    "browser": {"browser", "web browser", "internet browser", "the browser", "my browser", "firefox", "mozilla firefox"},
     "settings": {"settings", "system settings", "computer settings"},
     "control-center": {"control center", "tirias control center", "dashboard", "tirias dashboard"},
 }
@@ -682,7 +685,10 @@ class TIRIASCore:
 
 
 def main():
-    conversation = ConversationEngine()
+    # Local model first (private, offline); cloud only if configured and local fails.
+    conversation = ConversationEngine(
+        provider=FallbackProvider([OllamaProvider(), OpenAIProvider()])
+    )
     tirias = TIRIASCore(conversation=conversation)
     print(
         f"TIRIAS Core {VERSION}\nNatural-language commands with optional voice input/output. "
