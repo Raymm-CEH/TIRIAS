@@ -19,6 +19,10 @@ import subprocess
 import sys
 import time
 
+from tirias.skill_system.application_skill import ApplicationSkill
+from tirias.skill_system.gateway import SkillGateway
+from tirias.skill_system.manager import SkillManager
+
 VERSION = "v0.8-intelligence"
 
 # Only these known applications may be launched. No user-provided shell text is used.
@@ -330,6 +334,15 @@ class TIRIASCore:
         self.intelligence = IntelligenceEngine(model=model if model is not None else LocalGGUFModel())
         self.conversation = conversation
         self.executor = Executor(self)
+        skill_manager = SkillManager()
+        registered, errors = skill_manager.register_skill(ApplicationSkill())
+        if not registered or not skill_manager.enable_skill("application_control"):
+            raise RuntimeError(f"Application skill failed to load: {errors}")
+        self.gateway = SkillGateway(
+            skill_manager,
+            granted_permissions=("applications.launch",),
+            audit_path=self.audit_path.with_name("gateway-audit.log"),
+        )
 
     def speak_response(self, response):
         """Speak a response if spoken output is enabled; terminal output is unaffected."""
@@ -343,7 +356,23 @@ class TIRIASCore:
         except OSError:
             pass
 
+    def _launch_via_gateway(self, app_id, label):
+        result = self.gateway.request(
+            "application_control", "launch_application", {"app_id": app_id}
+        )
+        if not result.allowed:
+            self.audit(f"gateway_denied app={app_id}")
+            return f"I couldn't open {label}: {result.message}"
+        if result.message.startswith("Launch request sent"):
+            self.audit(f"launched_app app={app_id} via=gateway")
+            return f"Opening {label}."
+        return f"I couldn't open {label}: {result.message}"
+
     def launch(self, app, target=None):
+        # Migrated: browser goes through the gateway.
+        # TODO: move terminal, settings, files and control-center onto the gateway too.
+        if app == "browser" and target is None:
+            return self._launch_via_gateway("firefox", "browser")
         if app == "control-center":
             control_center = Path(__file__).resolve().with_name("control_center.py")
             if not control_center.is_file():
