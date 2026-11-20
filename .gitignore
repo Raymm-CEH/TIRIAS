@@ -23,3 +23,6 @@ TaskPlan
 *.bak-*
 *.pre-planner
 *~
+*.backup
+*.save
+*.tar.gz

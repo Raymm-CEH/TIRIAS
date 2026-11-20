@@ -1,7 +1,17 @@
 #!/usr/bin/env python3
-"""TIRIAS Core v0.6: natural-language commands with optional speech input/output."""
+"""TIRIAS Core v0.8: offline-first intelligence with safe local execution."""
+
 from datetime import datetime
+from tirias.context import ConversationContext
+from tirias.executor import Executor
+from tirias.intelligence import IntelligenceEngine
+from tirias.local_model import LocalGGUFModel
+from tirias.memory import LocalMemory
 from pathlib import Path
+from tirias.conversation import ConversationEngine
+from tirias.providers.fallback import FallbackProvider
+from tirias.providers.ollama_provider import OllamaProvider
+from tirias.providers.openai_provider import OpenAIProvider
 import json
 import os
 import platform
@@ -12,7 +22,14 @@ import subprocess
 import sys
 import time
 
-VERSION = "v0.6"
+from tirias.skill_system.application_skill import ApplicationSkill
+from tirias.skill_system.control_center_skill import ControlCenterSkill
+from tirias.skill_system.folder_skill import FolderSkill
+from tirias.skill_system.web_skill import WebSearchSkill, parse_search_request
+from tirias.skill_system.gateway import SkillGateway
+from tirias.skill_system.manager import SkillManager
+
+VERSION = "v0.8-intelligence"
 
 # Only these known applications may be launched. No user-provided shell text is used.
 APPS = {
@@ -55,7 +72,7 @@ FOLDER_SHOW_ALIASES = {
 APP_ALIASES = {
     "terminal": {"terminal", "a terminal", "the terminal", "command terminal"},
     "files": {"files", "file manager", "folder window", "my files"},
-    "browser": {"browser", "web browser", "internet browser", "the browser", "my browser"},
+    "browser": {"browser", "web browser", "internet browser", "the browser", "my browser", "firefox", "mozilla firefox"},
     "settings": {"settings", "system settings", "computer settings"},
     "control-center": {"control center", "tirias control center", "dashboard", "tirias dashboard"},
 }
@@ -272,6 +289,7 @@ class VoiceInput:
                         if transcript:
                             return transcript
 
+
             result = json.loads(recognizer.FinalResult())
             return str(result.get("text", "")).strip()
         except VoiceInputError:
@@ -308,7 +326,7 @@ def normalize(text: str) -> str:
 
 
 class TIRIASCore:
-    def __init__(self, home=None, audit_path=None, speech=None, voice_input=None):
+    def __init__(self, home=None, audit_path=None, speech=None, voice_input=None, model=None, memory_path=None, conversation=None):
         self.home = Path(home or Path.home()).expanduser().resolve()
         self.current_dir = self.home
         self.workspace = self.home / "TIRIAS-Workspace"
@@ -316,6 +334,34 @@ class TIRIASCore:
         self.speech = speech if speech is not None else SpeechOutput()
         self.voice_input = voice_input if voice_input is not None else VoiceInput()
         self.audit_path = Path(audit_path) if audit_path else self.home / ".local/state/tirias/audit.log"
+        state_dir = self.home / ".local/state/tirias"
+        self.context = ConversationContext(max_turns=8, max_chars=500)
+        self.memory = LocalMemory(memory_path or state_dir / "memory.sqlite3")
+        self.intelligence = IntelligenceEngine(model=model if model is not None else LocalGGUFModel())
+        self.conversation = conversation
+        self.executor = Executor(self)
+        skill_manager = SkillManager()
+        registered, errors = skill_manager.register_skill(ApplicationSkill())
+        if not registered or not skill_manager.enable_skill("application_control"):
+            raise RuntimeError(f"Application skill failed to load: {errors}")
+        registered, errors = skill_manager.register_skill(WebSearchSkill())
+        if not registered or not skill_manager.enable_skill("web_search"):
+            raise RuntimeError(f"Web search skill failed to load: {errors}")
+        for extra_skill in (
+            FolderSkill(self.home),
+            ControlCenterSkill(Path(__file__).resolve().with_name("control_center.py")),
+        ):
+            registered, errors = skill_manager.register_skill(extra_skill)
+            extra_id = extra_skill.manifest.skill_id
+            if not registered or not skill_manager.enable_skill(extra_id):
+                raise RuntimeError(f"Skill {extra_id} failed to load: {errors}")
+        self.gateway = SkillGateway(
+            skill_manager,
+            granted_permissions=(
+                "applications.launch", "network.read", "files.read", "desktop.interact",
+            ),
+            audit_path=self.audit_path.with_name("gateway-audit.log"),
+        )
 
     def speak_response(self, response):
         """Speak a response if spoken output is enabled; terminal output is unaffected."""
@@ -329,40 +375,45 @@ class TIRIASCore:
         except OSError:
             pass
 
+    def _search_via_gateway(self, query):
+        result = self.gateway.request("web_search", "search_web", {"query": query})
+        if not result.allowed:
+            self.audit("gateway_denied skill=web_search")
+            return f"I couldn't run that search: {result.message}"
+        if result.message.startswith("Search request sent"):
+            self.audit("web_search via=gateway")
+            return f"Searching the web for {query}."
+        return f"I couldn't run that search: {result.message}"
+
+    GATEWAY_APPS = {"browser": "firefox", "terminal": "terminal", "settings": "settings"}
+
+    def _gateway_launch(self, skill_id, action, arguments, label):
+        result = self.gateway.request(skill_id, action, arguments)
+        if not result.allowed:
+            self.audit(f"gateway_denied skill={skill_id} action={action}")
+            return f"I couldn't open {label}: {result.message}"
+        if result.message.startswith("Launch request sent"):
+            self.audit(f"launched_app skill={skill_id} action={action} via=gateway")
+            return f"Opening {label}."
+        return f"I couldn't open {label}: {result.message}"
+
     def launch(self, app, target=None):
+        """Launch an approved app. Every launch goes through the skill gateway."""
         if app == "control-center":
-            control_center = Path(__file__).resolve().with_name("control_center.py")
-            if not control_center.is_file():
-                return "TIRIAS Control Center is missing from this project folder."
-            try:
-                check = subprocess.run(
-                    [sys.executable, "-c", "import tkinter"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                    text=True, timeout=5, check=False,
-                )
-                if check.returncode != 0:
-                    return ("TIRIAS Control Center needs Python Tkinter. On Kali/Debian, install it with "
-                            "'sudo apt install python3-tk', then try again. Details: " +
-                            (check.stderr.strip().splitlines()[-1] if check.stderr.strip() else "Tkinter unavailable."))
-                subprocess.Popen(
-                    [sys.executable, str(control_center)],
-                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL, start_new_session=True,
-                )
-                self.audit("launched_app app=control-center")
-                return "Opening the TIRIAS Control Center."
-            except (OSError, subprocess.SubprocessError) as exc:
-                return f"I couldn't open the TIRIAS Control Center: {exc}"
-        for template in APPS[app]:
-            if shutil.which(template[0]):
-                args = [x.replace("{target}", str(target)) for x in template]
-                try:
-                    subprocess.Popen(args, start_new_session=True)
-                    self.audit(f"launched_app app={app}")
-                    return f"Opening {app}."
-                except OSError as e:
-                    return f"I couldn't open {app}: {e}"
-        return f"I couldn't find a supported {app} application on this computer."
+            return self._gateway_launch(
+                "control_center", "open_control_center", {}, "the TIRIAS Control Center"
+            )
+        if app == "files":
+            folder = str(target if target is not None else self.current_dir)
+            return self._gateway_launch(
+                "folder_access", "open_folder", {"path": folder}, "files"
+            )
+        app_id = self.GATEWAY_APPS.get(app)
+        if app_id is None:
+            return f"I don't have an approved application for {app}."
+        return self._gateway_launch(
+            "application_control", "launch_application", {"app_id": app_id}, app
+        )
 
     def list_files(self):
         try:
@@ -452,12 +503,16 @@ class TIRIASCore:
         )
         return match.group(1).strip() if match else None
 
-    def handle_command(self, raw):
+    def _handle_command(self, raw):
         command = re.sub(r"\s+", " ", raw.strip().replace("’", "'").replace("‘", "'"))
         command = re.sub(r"^please,\s*", "", command, flags=re.IGNORECASE)
         c = normalize(command)
         if not c:
             return True, "I didn't catch a command. Type 'help' or ask me in plain language."
+
+        memory_response = self._handle_memory_command(c)
+        if memory_response is not None:
+            return True, memory_response
 
         # Only exit TIRIAS itself; no OS shutdown commands are performed.
         if c in QUIT_ALIASES:
@@ -564,15 +619,86 @@ class TIRIASCore:
                     return True, self.launch("files", self.current_dir)
                 return True, self.launch(app)
 
+        search_query = parse_search_request(command)
+        if search_query is not None:
+            return True, self._search_via_gateway(search_query)
+
         folder_name = self._parse_folder_request(command)
         if folder_name is not None:
             return True, self.request_folder(folder_name)
 
+        # Offline intelligence is a fallback after all legacy safety-critical routes.
+        # The model can select only an allowlisted goal; it cannot supply commands.
+        plan = self.intelligence.understand(c, context=self.context.render())
+        if plan is not None:
+            if any(step.requires_confirmation for step in plan.steps):
+                return True, ("I understand the goal, but need more details before planning that action. "
+                              "For a project folder, say 'create a folder called NAME'; "
+                              "I'll ask you to confirm before creating it.")
+            results = self.executor.execute(plan)
+            return True, "\n".join(results)
+        if self.conversation is not None:
+            try:
+                answer = self.conversation.respond(
+                    command,
+                    context=self.context.render(),
+                )
+                return True, answer
+            except RuntimeError:
+                return True, (
+                    "I couldn't reach the conversation service. "
+                    "Your local TIRIAS commands are still available."
+                )
+
         return True, "I don't recognize that request yet. Try 'help'. For safety, I never execute arbitrary terminal text."
 
 
+    def handle_command(self, raw):
+        """Handle one request, retain bounded context, and safely route unknown phrasing."""
+        keep_running, response = self._handle_command(raw)
+        if isinstance(raw, str) and raw.strip():
+            self.context.add_turn(raw, response)
+        return keep_running, response
+
+    def _handle_memory_command(self, command):
+        """Explicit memory controls; no automatic conversation persistence."""
+        c = normalize(command)
+        if c in {"list memories", "what do you remember", "show saved memories"}:
+            keys = self.memory.list_keys()
+            return "I have no saved memories." if not keys else "Saved memory keys: " + ", ".join(keys)
+        match = re.fullmatch(r"(?:please )?remember (.{1,80}?) as (.{1,500})", c)
+        if match:
+            key, value = match.group(1).strip(), match.group(2).strip()
+            sensitive_terms = ("password", "passcode", "token", "secret", "private key", "recovery code")
+            if any(term in key.casefold() or term in value.casefold() for term in sensitive_terms):
+                return "I won't store passwords, tokens, recovery codes, or other authentication secrets."
+            try:
+                self.memory.remember(key, value)
+            except ValueError as exc:
+                return f"I couldn't save that memory: {exc}"
+            self.audit("explicit_memory_saved")
+            return f"I'll remember {key} locally on this computer."
+        match = re.fullmatch(r"(?:please )?(?:what do you remember about|recall) (.{1,80})", c)
+        if match:
+            key = match.group(1).strip()
+            value = self.memory.recall(key)
+            return f"For {key}, I have saved: {value}" if value is not None else f"I don't have a saved memory for {key}."
+        match = re.fullmatch(r"(?:please )?forget (.{1,80})", c)
+        if match:
+            key = match.group(1).strip()
+            removed = self.memory.forget(key)
+            if removed:
+                self.audit("explicit_memory_deleted")
+            return f"Forgot the saved entry for {key}." if removed else f"No saved entry exists for {key}."
+        return None
+
+
 def main():
-    tirias = TIRIASCore()
+    # Local model first (private, offline); cloud only if configured and local fails.
+    conversation = ConversationEngine(
+        provider=FallbackProvider([OllamaProvider(), OpenAIProvider()])
+    )
+    tirias = TIRIASCore(conversation=conversation)
     print(
         f"TIRIAS Core {VERSION}\nNatural-language commands with optional voice input/output. "
         "Type 'help' for examples.\n"

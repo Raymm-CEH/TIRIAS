@@ -1,137 +1,140 @@
 #!/usr/bin/env python3
-"""TIRIAS v0.7 opt-in wake phrase listener using local Vosk recognition.
+"""TIRIAS wake-word voice loop: wake word -> listen -> command router -> spoken reply.
 
-This is a software wake-phrase prototype, not a dedicated low-power wake-word model.
-It continuously processes microphone audio locally while running. Audio is not saved.
+Run from the project folder with the .venv active:
+    python wake_listener.py --dry-run     # hear and print only, execute nothing
+    python wake_listener.py               # full loop
+    python wake_listener.py --model path/to/tirias.onnx   # custom wake word later
+
+Audio stays in memory. The wake-word microphone stream is closed while Tirias listens
+for a command and while it speaks, so it can never trigger on its own voice.
 """
-from __future__ import annotations
-
-import json
-import re
+import argparse
+import os
 import sys
 import time
-from pathlib import Path
 
-from main import TIRIASCore, VoiceInput, VoiceInputError, dispatch_voice_transcript
+import numpy as np
+import openwakeword
+import sounddevice as sd
+from openwakeword.model import Model
 
-WAKE_PHRASES = ("hey tirias", "hey tirias", "okay tirias", "ok tirias")
+from main import TIRIASCore, VoiceInputError, dispatch_voice_transcript
+from tirias.conversation import ConversationEngine
+from tirias.providers.fallback import FallbackProvider
+from tirias.providers.ollama_provider import OllamaProvider
+from tirias.providers.openai_provider import OpenAIProvider
 
-
-def clean(text: str) -> str:
-    return re.sub(r"\s+", " ", text.casefold()).strip(" .,!?\t\n")
-
-
-def split_wake_phrase(text: str):
-    """Return (wake_detected, words_after_wake_phrase)."""
-    normalized = clean(text)
-    for phrase in WAKE_PHRASES:
-        pos = normalized.find(phrase)
-        if pos >= 0:
-            return True, normalized[pos + len(phrase):].strip(" .,!?\t\n")
-    return False, ""
+FRAME = 1280  # 80 ms at 16 kHz
+DEFAULT_MODEL = os.path.join(
+    os.path.dirname(openwakeword.__file__), "resources", "models", "hey_jarvis_v0.1.onnx"
+)
 
 
-def main() -> int:
-    voice = VoiceInput()
-    if not voice.ready:
-        print(voice.status())
-        print("Run 'bash setup_voice.sh' from this project folder first.")
-        return 2
-
+def load_model(path):
     try:
-        import sounddevice as sd
-        from vosk import KaldiRecognizer, Model, SetLogLevel
-    except Exception as exc:
-        print(f"Wake listener dependencies unavailable: {exc}")
-        print("Run 'bash setup_voice.sh' from this project folder.")
-        return 2
+        return Model(wakeword_model_paths=[path])
+    except TypeError:
+        return Model(wakeword_model_paths=[path], inference_framework="onnx")
 
-    SetLogLevel(-1)
-    try:
-        model = Model(str(voice.model_path))
-    except Exception as exc:
-        print(f"Couldn't load the local Vosk model: {exc}")
-        return 2
 
-    core = TIRIASCore(voice_input=voice)
-    import numpy as np
-    from scipy.signal import resample_poly
-    capture_rate = 48000
-    recognizer = KaldiRecognizer(model, 16000)
-    import queue
-    audio_queue = queue.Queue(maxsize=64)
+def build_core():
+    conversation = ConversationEngine(
+        provider=FallbackProvider([OllamaProvider(), OpenAIProvider()])
+    )
+    return TIRIASCore(conversation=conversation)
 
-    def callback(indata, frames, time_info, status):
+
+def open_stream(device):
+    for rate in (16000, 48000):
+        factor = rate // 16000
         try:
-            audio_queue.put_nowait(bytes(indata))
-        except queue.Full:
-            pass
+            stream = sd.InputStream(
+                samplerate=rate, channels=1, dtype="int16",
+                blocksize=FRAME * factor, device=device,
+            )
+            stream.start()
+            return stream, factor
+        except Exception as err:
+            last_error = err
+    raise SystemExit(f"Could not open the microphone: {last_error}")
 
-    print("TIRIAS v0.7 — Wake phrase prototype")
-    print("Listening locally for 'Hey TIRIAS'. Say the wake phrase, then a command.")
-    print("Example: 'Hey TIRIAS' (pause), then 'What time is it?'")
-    print("Microphone is active until you press Ctrl+C. No audio is saved.")
-    core.speak_response("Wake phrase listener is active. Say Hey TIRIAS when you need me.")
-    armed_until = 0.0
-    armed_seconds = 8.0
 
+def wait_for_wake(stream, factor, model, threshold, consecutive):
+    """Block until the score stays at or above the threshold for N frames in a row."""
+    streak = 0
+    while True:
+        data, _ = stream.read(FRAME * factor)
+        audio = data[:, 0]
+        if factor > 1:
+            audio = audio.reshape(-1, factor).astype(np.float32).mean(axis=1).astype(np.int16)
+        score = max(model.predict(audio).values())
+        streak = streak + 1 if score >= threshold else 0
+        if streak >= consecutive:
+            return score
+
+
+def run(args):
+    core = build_core()
+    if args.stt == "whisper":
+        from tirias.voice_whisper import WhisperVoiceInput
+        core.voice_input = WhisperVoiceInput(model_name=args.whisper_model, device=args.device)
+    print(core.voice_input.status())
+    model = load_model(args.model)
+    mode = "DRY RUN (nothing is executed)" if args.dry_run else "live"
+    print(f"Wake listener ready [{mode}]. Say the wake word. Ctrl+C to stop.")
+
+    while True:
+        stream, factor = open_stream(args.device)
+        try:
+            score = wait_for_wake(stream, factor, model, args.threshold, args.frames)
+        finally:
+            stream.stop()
+            stream.close()
+
+        print(f"\nWake word heard (score {score:.2f}). Listening for your command...")
+        try:
+            transcript = core.voice_input.listen_once()
+        except VoiceInputError as exc:
+            print(exc)
+            transcript = ""
+            time.sleep(2)
+
+        if not transcript:
+            print("(no command heard)")
+        else:
+            print(f'You said: "{transcript}"')
+            if not args.dry_run:
+                keep, text = dispatch_voice_transcript(core, transcript)
+                print(f"TIRIAS > {text}")
+                core.speak_response(text)  # blocking; the mic is closed meanwhile
+                if not keep:
+                    return
+
+        model = load_model(args.model)  # fresh detector state after every wake
+        time.sleep(args.cooldown)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="TIRIAS wake-word voice loop")
+    parser.add_argument("--model", default=DEFAULT_MODEL, help="wake word .onnx file")
+    parser.add_argument("--device", default=None, help="input device number")
+    parser.add_argument("--threshold", type=float, default=0.6)
+    parser.add_argument("--frames", type=int, default=2, help="consecutive frames needed")
+    parser.add_argument("--cooldown", type=float, default=2.0, help="seconds to ignore after a wake")
+    parser.add_argument("--stt", choices=["vosk", "whisper"], default="vosk",
+                        help="speech recognizer for the command after the wake word")
+    parser.add_argument("--whisper-model", default="base.en", help="tiny.en, base.en or small.en")
+    parser.add_argument("--dry-run", action="store_true", help="print what was heard; run nothing")
+    args = parser.parse_args()
+    if args.device is not None:
+        args.device = int(args.device)
     try:
-        with sd.RawInputStream(device=0, samplerate=capture_rate, blocksize=12000,
-                               dtype="int16", channels=1, callback=callback):
-            while True:
-                try:
-                    chunk = audio_queue.get(timeout=0.5)
-                except queue.Empty:
-                    if armed_until and time.monotonic() > armed_until:
-                        armed_until = 0.0
-                        print("Wake session expired. Say 'Hey TIRIAS' to try again.")
-                    continue
-
-                audio = np.frombuffer(chunk, dtype=np.int16)
-                audio = resample_poly(audio, 1, 3).astype(np.int16)
-                chunk = audio.tobytes()
-                if not recognizer.AcceptWaveform(chunk):
-                    continue
-                result = json.loads(recognizer.Result())
-                transcript = clean(str(result.get("text", "")))
-                if not transcript:
-                    continue
-
-                if armed_until and time.monotonic() <= armed_until:
-                    print(f"You > {transcript}")
-                    keep_running, response = dispatch_voice_transcript(core, transcript)
-                    print(f"TIRIAS > {response}\n")
-                    core.speak_response(response)
-                    armed_until = 0.0
-                    recognizer.Reset()
-                    if not keep_running:
-                        return 0
-                    continue
-
-                detected, trailing = split_wake_phrase(transcript)
-                if detected:
-                    print("Wake phrase detected.")
-                    if trailing:
-                        print(f"You > {trailing}")
-                        keep_running, response = dispatch_voice_transcript(core, trailing)
-                        print(f"TIRIAS > {response}\n")
-                        core.speak_response(response)
-                        if not keep_running:
-                            return 0
-                    else:
-                        armed_until = time.monotonic() + armed_seconds
-                        print(f"I'm listening for your command for {int(armed_seconds)} seconds…")
-                        core.speak_response("Yes? I'm listening.")
-                recognizer.Reset()
+        run(args)
     except KeyboardInterrupt:
-        print("\nTIRIAS wake listener stopped. Microphone released.")
-        core.speak_response("Wake listener stopped.")
-        return 0
-    except Exception as exc:
-        print(f"Wake listener error: {exc}")
-        print("Check 'voice devices' and your desktop microphone permissions.")
-        return 1
+        print("\nStopped.")
+    return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())
