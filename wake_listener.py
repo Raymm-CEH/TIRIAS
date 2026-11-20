@@ -79,6 +79,12 @@ def run(args):
     if args.stt == "whisper":
         from tirias.voice_whisper import WhisperVoiceInput
         core.voice_input = WhisperVoiceInput(model_name=args.whisper_model, device=args.device)
+    if args.tts == "piper":
+        from tirias.speech_piper import PiperSpeechOutput
+        speech = PiperSpeechOutput()
+        print("Speech: Piper voice." if speech.piper_ready
+              else "Speech: Piper voice not found; using eSpeak NG.")
+        core.speech = speech
     print(core.voice_input.status())
     model = load_model(args.model)
     mode = "DRY RUN (nothing is executed)" if args.dry_run else "live"
@@ -122,6 +128,8 @@ def main():
     parser.add_argument("--threshold", type=float, default=0.6)
     parser.add_argument("--frames", type=int, default=2, help="consecutive frames needed")
     parser.add_argument("--cooldown", type=float, default=2.0, help="seconds to ignore after a wake")
+    parser.add_argument("--tts", choices=["piper", "espeak"], default="piper",
+                        help="voice for spoken replies")
     parser.add_argument("--stt", choices=["vosk", "whisper"], default="vosk",
                         help="speech recognizer for the command after the wake word")
     parser.add_argument("--whisper-model", default="base.en", help="tiny.en, base.en or small.en")
