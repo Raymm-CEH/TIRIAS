@@ -192,3 +192,69 @@ class SystemRoutingTests(unittest.TestCase):
         with patch("tirias.skill_system.system_skills._run") as run:
             self.core.handle_command("what is a volume knob")
         run.assert_not_called()
+
+
+class WindowConfirmationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.home = Path(self.temp.name)
+        self.core = TIRIASCore(
+            home=self.home,
+            audit_path=self.home / "audit.log",
+            speech=QuietSpeech(),
+            voice_input=QuietVoice(),
+        )
+        self.calls = []
+
+        def fake_run(command):
+            self.calls.append(command)
+            return "0x04600003  0 kali Notes\n" if command[:2] == ["wmctrl", "-l"] else ""
+
+        self.fake_run = fake_run
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def closes(self):
+        return [c for c in self.calls if c[:3] == ["wmctrl", "-i", "-c"]]
+
+    def ask(self):
+        with patch("main.find_active_window", return_value=("0x04600003", "Notes")):
+            return self.core.handle_command("close this window")[1]
+
+    def test_asks_first_and_does_not_close(self):
+        with patch("tirias.skill_system.window_skill._run", self.fake_run):
+            text = self.ask()
+        self.assertIn("Close the window 'Notes'?", text)
+        self.assertEqual(self.core.pending[0], "gateway")
+        self.assertEqual(self.closes(), [])
+
+    def test_yes_closes_exactly_that_window(self):
+        with patch("tirias.skill_system.window_skill._run", self.fake_run):
+            self.ask()
+            _, text = self.core.handle_command("yes")
+        self.assertEqual(self.closes(), [["wmctrl", "-i", "-c", "0x04600003"]])
+        self.assertIsNone(self.core.pending)
+        self.assertIn("Notes", text)
+
+    def test_cancel_discards_without_closing(self):
+        with patch("tirias.skill_system.window_skill._run", self.fake_run):
+            self.ask()
+            self.core.handle_command("cancel")
+            _, text = self.core.handle_command("yes")
+        self.assertEqual(self.closes(), [])
+        self.assertIn("no pending action", text)
+
+    def test_expired_request_is_not_run(self):
+        with patch("tirias.skill_system.window_skill._run", self.fake_run):
+            self.ask()
+            self.core.pending[1]["expires"] = 0
+            _, text = self.core.handle_command("yes")
+        self.assertEqual(self.closes(), [])
+        self.assertIn("expired", text)
+
+    def test_refusal_for_own_window_sets_nothing_pending(self):
+        with patch("main.find_active_window", side_effect=OSError("That is the window I'm running in")):
+            _, text = self.core.handle_command("close this window")
+        self.assertIn("running in", text)
+        self.assertIsNone(self.core.pending)

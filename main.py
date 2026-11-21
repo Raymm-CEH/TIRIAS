@@ -28,6 +28,7 @@ from tirias.skill_system.folder_skill import FolderSkill
 from tirias.skill_system.system_phrases import parse_system_request
 from tirias.skill_system.system_skills import BrightnessSkill, MediaSkill, VolumeSkill
 from tirias.skill_system.web_skill import WebSearchSkill, parse_search_request
+from tirias.skill_system.window_skill import WindowSkill, find_active_window, parse_window_request
 from tirias.skill_system.gateway import SkillGateway
 from tirias.skill_system.manager import SkillManager
 
@@ -355,6 +356,7 @@ class TIRIASCore:
             MediaSkill(),
             VolumeSkill(),
             BrightnessSkill(),
+            WindowSkill(),
         ):
             registered, errors = skill_manager.register_skill(extra_skill)
             extra_id = extra_skill.manifest.skill_id
@@ -364,7 +366,7 @@ class TIRIASCore:
             skill_manager,
             granted_permissions=(
                 "applications.launch", "network.read", "files.read", "desktop.interact",
-                "system.manage",
+                "system.manage", "windows.control",
             ),
             audit_path=self.audit_path.with_name("gateway-audit.log"),
         )
@@ -380,6 +382,32 @@ class TIRIASCore:
                 f.write(f"{datetime.now().astimezone().isoformat(timespec='seconds')} | {event}\n")
         except OSError:
             pass
+
+    def request_close_window(self):
+        try:
+            window_id, title = find_active_window()
+        except OSError as error:
+            return f"I couldn't close a window: {error}"
+        arguments = {"window_id": window_id, "title": title}
+        result = self.gateway.request("window_control", "close_window", arguments)
+        if result.needs_confirmation:
+            self.pending = ("gateway", {
+                "skill": "window_control", "action": "close_window",
+                "arguments": arguments, "expires": time.monotonic() + 30,
+            })
+            return f"{result.message} Say 'yes' to confirm or 'cancel' to discard it."
+        return f"I couldn't do that: {result.message}"
+
+    def _confirm_gateway(self, payload):
+        if time.monotonic() > payload["expires"]:
+            return "That request expired. Ask me again."
+        result = self.gateway.request(
+            payload["skill"], payload["action"], payload["arguments"], confirmed=True
+        )
+        if result.allowed and result.message.startswith("Done: "):
+            self.audit(f"confirmed_action skill={payload['skill']} action={payload['action']} via=gateway")
+            return result.message[len("Done: "):]
+        return f"I couldn't do that: {result.message}"
 
     def _system_via_gateway(self, skill_id, action, arguments):
         result = self.gateway.request(skill_id, action, arguments)
@@ -457,6 +485,8 @@ class TIRIASCore:
             return "There is no pending action to confirm."
         action, name = self.pending
         self.pending = None
+        if action == "gateway":
+            return self._confirm_gateway(name)
         if action != "create_folder":
             return "That pending action is not supported."
         try:
@@ -634,6 +664,9 @@ class TIRIASCore:
                 if app == "files":
                     return True, self.launch("files", self.current_dir)
                 return True, self.launch(app)
+
+        if parse_window_request(command):
+            return True, self.request_close_window()
 
         system_request = parse_system_request(command)
         if system_request is not None:

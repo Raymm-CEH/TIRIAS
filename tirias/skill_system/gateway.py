@@ -14,6 +14,7 @@ from tirias.skill_system.manager import SkillManager
 class GatewayResult:
     allowed: bool
     message: str
+    needs_confirmation: bool = False
 
 
 class SkillGateway:
@@ -26,7 +27,7 @@ class SkillGateway:
         self._confirm = confirm or (lambda prompt: False)  # no confirmer = deny
         self._audit_path = Path(audit_path) if audit_path else None
 
-    def request(self, skill_id, action, arguments) -> GatewayResult:
+    def request(self, skill_id, action, arguments, confirmed=False) -> GatewayResult:
         skill = self._manager.get_enabled_skill(skill_id)
         if skill is None:
             return self._deny(skill_id, action, arguments,
@@ -64,10 +65,15 @@ class SkillGateway:
             return self._deny(skill_id, action, arguments,
                               f"invalid arguments: {problem.message}")
 
-        if spec.sensitive and not self._confirm(
-            f"Allow {skill_id}.{action} with {arguments}?"
-        ):
-            return self._deny(skill_id, action, arguments, "not confirmed by the user")
+        if spec.sensitive and not confirmed:
+            describe = getattr(skill, "describe_action", None)
+            try:
+                text = describe(action, arguments) if callable(describe) else f"Run {skill_id}.{action}?"
+            except Exception:
+                text = f"Run {skill_id}.{action}?"
+            if not self._confirm(text):
+                self._record("needs_confirmation", skill_id, action, arguments)
+                return GatewayResult(False, text, needs_confirmation=True)
 
         try:
             output = skill.execute(action, arguments)
