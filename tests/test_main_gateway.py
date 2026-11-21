@@ -158,3 +158,37 @@ class MigratedLaunchTests(unittest.TestCase):
 
     def test_unknown_app_is_refused(self):
         self.assertIn("approved", self.core.launch("calculator"))
+
+
+class SystemRoutingTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.home = Path(self.temp.name)
+        self.core = TIRIASCore(
+            home=self.home,
+            audit_path=self.home / "audit.log",
+            speech=QuietSpeech(),
+            voice_input=QuietVoice(),
+        )
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_volume_up_goes_through_gateway(self):
+        with patch("tirias.skill_system.system_skills._run", return_value="") as run:
+            _, text = self.core.handle_command("turn the volume up")
+        run.assert_any_call(
+            ["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", "10%+"]
+        )
+        self.assertEqual(text, "Volume up.")
+
+    def test_next_song_goes_through_gateway(self):
+        with patch("tirias.skill_system.system_skills._run", return_value="") as run:
+            _, text = self.core.handle_command("next song")
+        run.assert_called_once_with(["playerctl", "next"])
+        self.assertEqual(text, "Next track.")
+
+    def test_plain_question_does_not_touch_the_system(self):
+        with patch("tirias.skill_system.system_skills._run") as run:
+            self.core.handle_command("what is a volume knob")
+        run.assert_not_called()

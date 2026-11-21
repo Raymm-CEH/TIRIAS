@@ -25,6 +25,8 @@ import time
 from tirias.skill_system.application_skill import ApplicationSkill
 from tirias.skill_system.control_center_skill import ControlCenterSkill
 from tirias.skill_system.folder_skill import FolderSkill
+from tirias.skill_system.system_phrases import parse_system_request
+from tirias.skill_system.system_skills import BrightnessSkill, MediaSkill, VolumeSkill
 from tirias.skill_system.web_skill import WebSearchSkill, parse_search_request
 from tirias.skill_system.gateway import SkillGateway
 from tirias.skill_system.manager import SkillManager
@@ -350,6 +352,9 @@ class TIRIASCore:
         for extra_skill in (
             FolderSkill(self.home),
             ControlCenterSkill(Path(__file__).resolve().with_name("control_center.py")),
+            MediaSkill(),
+            VolumeSkill(),
+            BrightnessSkill(),
         ):
             registered, errors = skill_manager.register_skill(extra_skill)
             extra_id = extra_skill.manifest.skill_id
@@ -359,6 +364,7 @@ class TIRIASCore:
             skill_manager,
             granted_permissions=(
                 "applications.launch", "network.read", "files.read", "desktop.interact",
+                "system.manage",
             ),
             audit_path=self.audit_path.with_name("gateway-audit.log"),
         )
@@ -374,6 +380,16 @@ class TIRIASCore:
                 f.write(f"{datetime.now().astimezone().isoformat(timespec='seconds')} | {event}\n")
         except OSError:
             pass
+
+    def _system_via_gateway(self, skill_id, action, arguments):
+        result = self.gateway.request(skill_id, action, arguments)
+        if not result.allowed:
+            self.audit(f"gateway_denied skill={skill_id} action={action}")
+            return f"I couldn't do that: {result.message}"
+        if result.message.startswith("Done: "):
+            self.audit(f"system_action skill={skill_id} action={action} via=gateway")
+            return result.message[len("Done: "):]
+        return f"I couldn't do that: {result.message}"
 
     def _search_via_gateway(self, query):
         result = self.gateway.request("web_search", "search_web", {"query": query})
@@ -618,6 +634,10 @@ class TIRIASCore:
                 if app == "files":
                     return True, self.launch("files", self.current_dir)
                 return True, self.launch(app)
+
+        system_request = parse_system_request(command)
+        if system_request is not None:
+            return True, self._system_via_gateway(*system_request)
 
         search_query = parse_search_request(command)
         if search_query is not None:
